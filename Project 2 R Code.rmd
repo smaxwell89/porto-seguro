@@ -1,0 +1,402 @@
+---
+title: "Project 2, Kaggle Porto Seguro Safe Driver Prediction Challenge"
+author: "Group 1"
+date: "5/23/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(tree)
+library(Boruta)
+library(tidyverse)
+library(randomForest)
+library(caret)
+library(lime)
+library(tinytex)
+library(MASS)
+library(dplyr)
+library(gbm)
+library(xgboost)
+library(corrplot)
+library(mvtnorm)
+library(DiagrammeR)
+library(ROSE)
+library(cluster)
+library(plotrix)
+library(graphics)
+library(data.table)
+```
+
+#Importing datasets#
+```{r}
+# We don't need this line
+data <- read.csv("sample_submission.csv")
+train <- read.csv("train.csv")
+```
+
+#Data#
+```{r}
+head(train)
+str(train)
+
+ncol(train)
+nrow(train)
+```
+
+#Data Partition into training and validation sets#
+```{r}
+set.seed(123)
+ind <- sample(2, nrow(train), replace = TRUE, prob = c(0.5, 0.5))
+
+traindata <- train[ind == 1,]
+valdata <- train[ind == 2,]
+```
+
+#View both training and validation data sets#
+```{r}
+head(traindata)
+head(valdata)
+```
+#Take a small sample from training and val set for analysis#
+```{r}
+set.seed(123)
+train_s2 <- sample_frac(traindata, 0.05)
+train_s2$target <- as.factor(train_s2$target)
+
+val_s2 <-sample_frac(valdata, 0.05)
+val_s2$target <- as.factor(val_s2$target)
+nrow(val_s2)
+```
+#Random Forest Model#
+```{r}
+set.seed(123)
+train_rf_model <- randomForest(target~., data = train_s2)
+train_rf_model
+```
+
+#Bagging
+```{r}
+bag_train <- train(target~.,
+             data=train_s2,
+             method="treebag",
+             importance=TRUE)
+bag_train
+```
+
+#Variable important plot#
+```{r}
+plot(varImp(bag_train))
+
+ggplot2::ggplot(varImp(bag_train))
+```
+
+#Test on validation data#
+```{r}
+set.seed(123)
+val_rf_model <- randomForest(target~., data = val_s2)
+val_rf_model
+```
+
+```{r}
+bag_val <- train(target~.,
+             data=val_s2,
+             method="treebag",
+             importance=TRUE)
+bag_val
+```
+
+
+
+
+
+
+
+
+```{r message = FALSE, echo = FALSE, results = 'hide'}
+
+data <- fread("~/Documents/Oregon State University/Fall 2021/Module 10/train.csv")
+
+data <- data[ ,2:length(names(data))]
+
+
+#HC analysis
+data <- data %>% 
+  mutate_at(vars(ends_with("bin")), list(factor)) %>% 
+  mutate_at(vars(ends_with("cat")), list(factor))
+
+# create predictors and response data frames
+data_resp <- data[,1]
+data_pred <- data[,-1]
+
+
+# Create index to split training and validation sets
+set.seed(1)
+idx.hc <- sample(c(0,1), nrow(data), replace = TRUE, prob = c(.95, .05))
+
+# Using the index separate the training set into training and validation sets
+resp_tr <- data_resp[idx.hc == 0]
+pred_tr <- data_pred[idx.hc == 0,]
+
+resp_val <- data_resp[idx.hc == 1]
+pred_val <- data_pred[idx.hc == 1,]
+
+```
+
+
+```{r}
+# Hierarchical Clustering 
+
+hc <- hclust(dist(hc.data), method = "average")
+plot(hc)
+
+cl <- cutree(hc, k=2)
+plot(data.frame(hc.data[,1], data.frame(hc.data[,2]), col=cl))
+
+```
+
+
+```{r}
+# XGBoost Classifier
+data <- fread("~/Documents/Oregon State University/Fall 2021/Module 7/train.csv")
+data = data[ ,2:length(names(data))] # completed already
+# create predictors and response data frames
+data_resp <- data[,1] # completed already
+data_pred <- data[,-1] # completed already
+
+
+# Create index to split training and validation sets
+set.seed(1)
+idx <- sample(c(0,1), nrow(data), replace = TRUE, prob = c(.8, .2))
+
+# Using the index separate the training set into training and validation sets
+resp_tr <- as.matrix((data_resp[idx == 0]))
+pred_tr <- as.matrix(data_pred[idx == 0,])
+
+resp_val <- as.matrix(data_resp[idx == 1])
+pred_val <- as.matrix(data_pred[idx == 1,])
+
+summary(data_resp)
+
+pos <- sum(resp_tr == 1)
+neg<- sum(resp_tr == 0)
+
+neg.rate <- neg / pos
+
+
+#Weighting:
+
+xgb.data.cv = xgb.cv(data = pred_tr, label = resp_tr, 
+                     max.depth = 6, eta = .1, nrounds = 200, min_child_weight = 1,
+                     nfold = 5, early_stopping_rounds = 5, scale_pos_weight = neg.rate,
+                     objective = "binary:logistic", eval_metric = "aucpr")
+
+summary(xgb.data.cv)
+sel_rounds <- xgb.data.cv$best_iteration
+AUC <- xgb.data.cv$evaluation_log[sel_rounds]
+AUC
+
+# Assess different weights of the positive class of target.
+# Weight minus two
+
+xgb.data.cv2 = xgb.cv(data = pred_tr, label = resp_tr,
+                      max.depth = 6, eta = .1, nrounds = 200, min_child_weight = 1,
+                      nfold = 5, early_stopping_rounds = 5, scale_pos_weight = neg.rate-2,
+                      objective = "binary:logistic", eval_metric = "aucpr")
+
+
+sel_rounds2 <- xgb.data.cv2$best_iteration
+AUC2 <- xgb.data.cv2$evaluation_log[sel_rounds2]
+AUC2
+best_xgb <- ifelse(AUC2 > AUC, "AUC2", "AUC")
+best_auc <- ifelse(AUC2 > AUC, AUC2, AUC)
+
+#
+# # Weight plus 2
+xgb.data.cv3 = xgb.cv(data = pred_tr, label = resp_tr,
+                      max.depth = 6, eta = .1, nrounds = 200, min_child_weight = 1,
+                      nfold = 5, early_stopping_rounds = 5, scale_pos_weight = neg.rate+2,
+                      objective = "binary:logistic", eval_metric = "aucpr")
+
+sel_rounds3 <- xgb.data.cv3$best_iteration
+AUC3 <- xgb.data.cv3$evaluation_log[sel_rounds3]
+AUC3
+
+best_xgb <- ifelse(AUC3 > best_auc, "AUC3", best_xgb)
+best_auc <- ifelse(AUC3 > best_auc, AUC3, best_auc)
+
+# # Looks like the recommended weighting was the best. 
+# # Now to try a different value of eta.
+
+xgb.data.cv4 = xgb.cv(data = pred_tr, label = resp_tr,
+                      max.depth = 6, eta = .05, nrounds = 200, min_child_weight = 1,
+                      nfold = 5, early_stopping_rounds = 5, scale_pos_weight = neg.rate,
+                      objective = "binary:logistic", eval_metric = "aucpr")
+
+sel_rounds4 <- xgb.data.cv4$best_iteration
+
+AUC4<- xgb.data.cv4$evaluation_log[sel_rounds4]
+AUC4
+
+best_xgb <- ifelse(AUC4 > best_auc, "AUC4", best_xgb)
+best_auc <- ifelse(AUC4 > best_auc, AUC4, best_auc)
+
+# # I think this helped improve test auc a bit. Now try lower eta = .01
+# 
+
+xgb.data.cv5 = xgb.cv(data = pred_tr, label = resp_tr,
+                      max.depth = 6, eta = .01, nrounds = 200, min_child_weight = 1,
+                      nfold = 5, early_stopping_rounds = 10, scale_pos_weight = neg.rate,
+                      objective = "binary:logistic", eval_metric = "aucpr")
+
+sel_rounds5 <- xgb.data.cv5$best_iteration
+AUC5 <- xgb.data.cv5$evaluation_log[sel_rounds5]
+AUC5
+
+best_xgb <- ifelse(AUC5 > best_auc, "AUC5", best_xgb)
+best_auc <- ifelse(AUC5 > best_auc, AUC5, best_auc)
+# Didn't help too much. Now try limiting max.depth to avoid overfitting
+
+xgb.data.cv6 = xgb.cv(data = pred_tr, label = resp_tr, 
+                      max.depth = 3, eta = .05, nrounds = 250, min_child_weight = 1,
+                      nfold = 5, early_stopping_rounds = 10, scale_pos_weight = neg.rate,
+                      objective = "binary:logistic", eval_metric = "aucpr")
+
+sel_rounds6 = xgb.data.cv6$best_iteration
+
+AUC6 <- xgb.data.cv6$evaluation_log[sel_rounds6]
+AUC6
+
+best_xgb <- ifelse(AUC6 > best_auc, "AUC6", best_xgb)
+best_auc <- ifelse(AUC6 > best_auc, AUC6, best_auc)
+
+#better results with smaller trees! Now try trees with even less depth
+
+
+xgb.data.cv7 = xgb.cv(data = pred_tr, label = resp_tr, 
+                      max.depth = 2, eta = .05, nrounds = 400, min_child_weight = 1,
+                      nfold = 5, early_stopping_rounds = 10, scale_pos_weight = neg.rate,
+                      objective = "binary:logistic", eval_metric = "aucpr")
+
+sel_rounds7 = xgb.data.cv7$best_iteration
+
+AUC7 <- xgb.data.cv7$evaluation_log[sel_rounds7]
+AUC7
+
+best_xgb <- ifelse(AUC7 > best_auc, "AUC7", best_xgb)
+best_auc <- ifelse(AUC7 > best_auc, AUC7, best_auc)
+
+# Not as good! Okay, now let's run the actual model
+
+xgb.data6 = xgboost(data = pred_tr, label = resp_tr, 
+                    max.depth = 3, eta = .05, nrounds = sel_rounds6, min_child_weight = 1,
+                    nfold = 5, early_stopping_rounds = 10, scale_pos_weight = neg.rate,
+                    objective = "binary:logistic", eval_metric = "aucpr")
+
+pred = predict(xgb.data6, pred_val)
+pred.xgb.data = ifelse(pred > 0.5, 1, 0)
+
+
+# Misclassification errors in the training data
+tab <- table(resp_val, pred.xgb.data)
+
+
+cm.gbm = confusionMatrix(tab)
+cm.gbm$byClass
+cm.gbm$table
+
+
+# F1 score of classification accuracy for test data
+cm.gbm$byClass[7]
+
+
+## Now to calculate gini
+
+print("Gini coefficient equals:")
+normalizedGini <- function(aa, pp) {
+  Gini <- function(a, p) {
+    if (length(a) !=  length(p)) stop("Actual and Predicted need to be equal lengths!")
+    temp.df <- data.frame(actual = a, pred = p, range=c(1:length(a)))
+    temp.df <- temp.df[order(-temp.df$pred, temp.df$range),]
+    population.delta <- 1 / length(a)
+    total.losses <- sum(a)
+    null.losses <- rep(population.delta, length(a)) # Hopefully is similar to accumulatedPopulationPercentageSum
+    accum.losses <- temp.df$actual / total.losses # Hopefully is similar to accumulatedLossPercentageSum
+    gini.sum <- cumsum(accum.losses - null.losses) # Not sure if this is having the same effect or not
+    sum(gini.sum) / length(a)
+  }
+  Gini(aa,pp) / Gini(aa,aa)
+}
+
+resp_val <- data_resp[idx == 1]
+normalizedGini(resp_val$target, pred)
+
+
+
+```
+## Introduction to dataset
+
+We selected the Porto Seguro’s Safe Driver Prediction competition from the Kaggle website (https://www.kaggle.com/c/porto-seguro-safe-driver-prediction/overview/evaluation). The goal of this analysis was to predict whether or not a driver will file an insurance claim next year based on the given predictors. The “target” columns within both data sets, indicate whether or not a claim was filed by the policy holder and takes binary values of 0 for no and 1 for yes. This dataset does contain unbalanced classes. After first attempting random forests and bagging methods in the first interim report, this second interim report focuses on boosting methods. 
+
+## Feature extraction and description
+
+Within both the training and testing datasets, there are several variables included however, they are not named. Instead, the features that belong to the same groups are identified as “ind”, “reg”, “car”, and “calc” and have prefixes of bin for binary features or cat for categorical features. There are 3 “reg” variables, 15 “car” variables with 11 being categorical, 18 “ind” variables, 3 of which are binary and 11 being categorical, and 20 “calc” variables with 6 being binary variables. All predictor variables were included when building the XGBoost classifier.
+
+## Hierarchical Clustering
+An attempt at hierarchical clustering was performed using the training data. The hierarchical clustering technique used average linkage to compare the distances between clusters. The resulting dendrogram appeared to show an imbalanced data set where a smaller portion of observations belonged to one hierarchy while a larger portion of observations belong to the larger hierarchy. This coincides with the true response values found in the dataset. However, the hierarchical clustering technique did not result in any useful features or data which could be used in the XGBoost model. 
+
+## XGBoost
+We used XGBoost with cross-validation to find a model that maximized the Precision Recall Area Under the Curve (PR AUC) metric, which is especially effective for imbalanced data sets. This is because the PR AUC metric looks at maximizing both precision and recall, which helps us balance the two goals of minimizing wrong guesses (precision) and making sure to catch as many of the rare positive cases as we can (recall.) 
+
+Our dataset is unbalanced, with a ratio of negative to positive values of ‘target’ of about 26:1. To improve our initial model, we weighted the positive observations of ‘target’ by this ratio, as recommended in the xgboost documentation. After weighting the observations with positive values, our PR AUC values were:
+
+```{r  message = FALSE}
+
+xgb.data.cv$evaluation_log[sel_rounds]
+
+```
+To be thorough, we looked at a few different weightings, and assessed the precision and recall for each. The original weighting ratio was about 26. We also evaluated weightings of 24 and 28. The resulting PR AUC metric decreased in each case. The recommended weighting provided the best PR AUC.
+
+We looked at several values of eta (learning rate) and found that an eta of 0.05 provided a very slight improvement in test PR AUC over an eta of 0.1:
+```{r}
+
+xgb.data.cv4$evaluation_log[sel_rounds4]
+
+```
+We then looked at whether reducing max.depth from 6 to 3 could avoid overfitting in the training data and ultimately improve the test PR AUC. This gave substantial improvement in test PR AUC but required over 300 rounds and a lot of modeling time. 
+
+
+```{r echo = FALSE, message = FALSE}
+
+xgb.data.cv6$evaluation_log[sel_rounds6]
+
+```
+
+The selected XGBoost model was then used to predict the values of the training data set, with the following results:
+
+```{r echo = FALSE, message = FALSE}
+
+cm.gbm$byClass[5]
+cm.gbm$byClass[6]
+
+importance_matrix = xgb.importance(model = xgb.data6)
+
+print("Importance Matrix Top 10")
+head(importance_matrix, 10)
+
+```
+Since the Kaggle competition uses the gini coefficient to score entries, our team also used the gini coefficient to score our training model. The model predictions resulted in a gini coefficient which would place our group near the top of the leaderboard if the model predicts the test data with the same efficiency. The gini coefficient scores entries between 0.0 and 0.5. A score of 0.0 suggests our model performs no better than random guessing. A score of 0.5 suggests our model perfectly predicts the test data. With a coefficient as follows, our model fits the data reasonably well. 
+
+
+```{r echo = FALSE, message = FALSE}
+print("Gini coefficient equals:")
+normalizedGini(resp_val$target, pred)
+
+```
+
+
+
